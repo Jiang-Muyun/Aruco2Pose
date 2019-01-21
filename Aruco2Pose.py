@@ -5,22 +5,11 @@ import numpy as np
 import time
 import cv2.aruco as aruco
 
-# Check for camera calibration data
-"""if not os.path.exists('calibration.pckl'):
-    print("You need to calibrate the camera you'll be using. See calibration project directory for details.")
-    exit()
-else:
-    f = open('calibration.pckl', 'rb')
-    (cameraMatrix, distCoeffs) = pickle.load(f)
-    f.close()
-    if cameraMatrix is None or distCoeffs is None:
-        print("Calibration issue. Remove ./calibration.pckl and recalibrate your camera with CalibrateCamera.py.")
-        exit()"""
-"""calibration={
-    'cameraMatrix':cameraMatrix.tolist(),
-    'distCoeffs':distCoeffs.tolist()
-}
-json.dump(calibration,open('calibration.json','w'),indent=4)"""
+import rospy
+import roslib
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import TransformStamped
+import tf
 
 calibration = json.load(open('calibration.json'))
 cameraMatrix = np.array(calibration['cameraMatrix'])
@@ -36,50 +25,45 @@ board = aruco.GridBoard_create(
         markerLength=2.28/100,markerSeparation=0.61/100,
         dictionary=ARUCO_DICT)
 
-#cam = cv2.VideoCapture('gridboard-test-at-kyles-desk2.mp4')
+rospy.init_node('aruco_node')
+br = tf.TransformBroadcaster()
+def publish_tf(rvec,tvec):
+    quaternion = tf.transformations.quaternion_from_euler(rvec[0][0],rvec[1][0],rvec[2][0])
+    br.sendTransform(tvec,quaternion,rospy.Time.now(),'Ground',"world")
+
 cam = cv2.VideoCapture(0)
-while(cam.isOpened()):
-    ret, QueryImg = cam.read()
-    if ret == True:
-        start = time.time()
-        gray = cv2.cvtColor(QueryImg, cv2.COLOR_BGR2GRAY)
+
+if __name__ == '__main__':
+    while(cam.isOpened()):
+        ret, QueryImg = cam.read()
+        if ret == True:
+            gray = cv2.cvtColor(QueryImg, cv2.COLOR_BGR2GRAY)
+        
+            # Detect Aruco markers
+            corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMETERS)
     
-        # Detect Aruco markers
-        corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMETERS)
-  
-        # Refine detected markers
-        # Eliminates markers not part of our board, adds missing markers to the board
-        corners, ids, rejectedImgPoints, recoveredIds = aruco.refineDetectedMarkers(
-                image = gray,
-                board = board,
-                detectedCorners = corners,
-                detectedIds = ids,
-                rejectedCorners = rejectedImgPoints,
-                cameraMatrix = cameraMatrix,
-                distCoeffs = distCoeffs)   
+            # Refine detected markers
+            # Eliminates markers not part of our board, adds missing markers to the board
+            corners, ids, rejectedImgPoints, recoveredIds = aruco.refineDetectedMarkers(
+                    image = gray,
+                    board = board,
+                    detectedCorners = corners,
+                    detectedIds = ids,
+                    rejectedCorners = rejectedImgPoints,
+                    cameraMatrix = cameraMatrix,
+                    distCoeffs = distCoeffs)   
 
-        ###########################################################################
-        # TODO: Add validation here to reject IDs/corners not part of a gridboard #
-        ###########################################################################
+            QueryImg = aruco.drawDetectedMarkers(QueryImg, corners, borderColor=(0, 0, 255))
 
-        # Outline all of the markers detected in our image
-        QueryImg = aruco.drawDetectedMarkers(QueryImg, corners, borderColor=(0, 0, 255))
+            # Require 15 markers before drawing axis
+            if ids is not None and len(ids) > 10:
+                # Estimate the posture of the gridboard, which is a construction of 3D space based on the 2D video 
+                retval, rvec, tvec = aruco.estimatePoseBoard(corners, ids, board, cameraMatrix, distCoeffs)
+                if retval:
+                    QueryImg = aruco.drawAxis(QueryImg, cameraMatrix, distCoeffs, rvec, tvec, 0.1)
+                    publish_tf(rvec,tvec)
 
-        # Require 15 markers before drawing axis
-        if ids is not None and len(ids) > 10:
-            # Estimate the posture of the gridboard, which is a construction of 3D space based on the 2D video 
-            retval, rvec, tvec = aruco.estimatePoseBoard(corners, ids, board, cameraMatrix, distCoeffs)
-            if retval:
-                QueryImg = aruco.drawAxis(QueryImg, cameraMatrix, distCoeffs, rvec, tvec, 0.1)
-                rotation,jacobian = cv2.Rodrigues(rvec)
-                #print(retval)
-                #print(rotation)
-                #print(rvec.tolist())
-                #print(tvec.tolist())
-        print(1000*(time.time()-start))
-        cv2.imshow('QueryImage', QueryImg)
+            cv2.imshow('QueryImage', QueryImg)
 
-    if cv2.waitKey(1)==27:
-        break
-
-cv2.destroyAllWindows()
+        if cv2.waitKey(1)==27:
+            break
